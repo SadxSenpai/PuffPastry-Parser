@@ -3,8 +3,8 @@ from discord.ext import commands
 from discord import app_commands
 import aiohttp
 import json
-import re
 from datetime import datetime
+import asyncio
 
 # === Load config ===
 with open("config.json") as f:
@@ -38,9 +38,17 @@ async def get_fflogs_token():
             data = await resp.json()
             access_token = data.get("access_token")
             print("✅ FFLogs v2 token acquired.")
+    return access_token
+
+# === Fetch FFLogs GraphQL ===
+async def fetch_fflogs_v2(query, variables, headers):
+    url = "https://www.fflogs.com/api/v2/client"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json={"query": query, "variables": variables}, headers=headers) as resp:
+            return await resp.json()
 
 # === /logreport Command ===
-@tree.command(name="logreport", description="Analyze a FFLogs report link")
+@tree.command(name="logreport", description="Analyze a FFLogs report link", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(link="The FFLogs report link (e.g. https://www.fflogs.com/reports/XXXXX)")
 async def logreport(interaction: discord.Interaction, link: str):
     await interaction.response.defer()
@@ -61,23 +69,7 @@ async def logreport(interaction: discord.Interaction, link: str):
                 bossPercentage
                 encounterID
               }
-              rankings {
-                data {
-                  fightID
-                  encounter {
-                    id
-                    name
-                  }
-                  roles {
-                    dps {
-                      characters {
-                        name
-                        rankPercent
-                      }
-                    }
-                  }
-                }
-              }
+              rankings
             }
           }
         }
@@ -85,25 +77,14 @@ async def logreport(interaction: discord.Interaction, link: str):
         variables = {"code": report_id}
         response = await fetch_fflogs_v2(query, variables, headers)
 
-        if "data" not in response or "reportData" not in response["data"]:
-            raise Exception("'data' not in response")
-
         report = response["data"]["reportData"]["report"]
         fights = report["fights"]
-        rankings_data = report.get("rankings", {}).get("data", [])
 
-        encounter_names = {
-            r["fightID"]: r["encounter"]["name"]
-            for r in rankings_data if "encounter" in r and "name" in r["encounter"]
-        }
-
-        player_best_parses = {}
-        for r in rankings_data:
-            for dps in r.get("roles", {}).get("dps", {}).get("characters", []):
-                name = dps["name"]
-                rank_percent = dps.get("rankPercent", 0)
-                if name not in player_best_parses or player_best_parses[name] < rank_percent:
-                    player_best_parses[name] = rank_percent
+        # Safely parse rankings JSON
+        try:
+            rankings_json = report.get("rankings", {})
+        except json.JSONDecodeError:
+            rankings_json = {}
 
         # Group fights by encounterID
         encounters = {}
@@ -113,61 +94,129 @@ async def logreport(interaction: discord.Interaction, link: str):
                 continue  # skip trash pulls
             encounters.setdefault(eid, []).append(fight)
 
+        # Map encounterID to name and gather best parses
+        encounter_names = {}
+        player_best_parses = {}
+
+        for r in rankings_json.get("data", []):
+            enc = r.get("encounter", {})
+            eid = enc.get("id")
+            ename = enc.get("name", f"Encounter {eid}")
+            encounter_names[eid] = ename
+
+        for r in rankings_json.get("data", []):
+            roles = r.get("roles", {})
+            for role_type in ["tanks", "healers", "dps"]:
+                characters = roles.get(role_type, {}).get("characters", [])
+                for character in characters:
+                    name = character.get("name")
+                    rank_percent = character.get("rankPercent", 0)
+                    if name and (name not in player_best_parses or player_best_parses[name] < rank_percent):
+                        player_best_parses[name] = rank_percent
+
+        # Build embed
         embed = discord.Embed(title=f"FFLogs Report: {report_id}", color=0xB71C1C)
-        for eid, fight_list in encounters.items():
-            fight_name = next((r["encounter"]["name"] for r in rankings_data if r["encounter"]["id"] == eid), f"Encounter {eid}")
-            kills = sum(1 for f in fight_list if f["kill"])
-            wipes = len(fight_list) - kills
+        for eid, fights in encounters.items():
+            ename = encounter_names.get(eid, f"Encounter {eid}")
+            kills = sum(1 for f in fights if f["kill"])
+            wipes = len(fights) - kills
             summary = f"✅ Kills: {kills} | ❌ Wipes: {wipes}\n"
 
-            for f in fight_list:
+            for f in fights:
                 duration = (f["endTime"] - f["startTime"]) // 1000
                 if f["kill"]:
-                    status = f"✅ Kill | Duration: {duration}s"
+                    summary += f"✅ Kill | Duration: {duration}s\n"
                 else:
-                    hp = f.get("bossPercentage", 0.0)
-                    status = f"❌ Wipe | Boss HP: {hp:.1f}% | Duration: {duration}s"
-                summary += f"{status}\n"
+                    hp = f.get("bossPercentage", 0)
+                    summary += f"❌ Wipe | Boss HP: {hp:.1f}% | Duration: {duration}s\n"
 
-            embed.add_field(name=fight_name, value=summary, inline=False)
+            embed.add_field(name=ename, value=summary, inline=False)
 
         if player_best_parses:
-            top_parsers = sorted(player_best_parses.items(), key=lambda x: x[1], reverse=True)
-            parse_summary = "\n".join([f"{name}: {percent:.2f}%" for name, percent in top_parsers])
-            embed.add_field(name="🏆 Best Player Parses", value=parse_summary, inline=False)
+            sorted_parses = sorted(player_best_parses.items(), key=lambda x: x[1], reverse=True)
+            parse_text = "\n".join(f"{name}: {percent:.1f}%" for name, percent in sorted_parses)
+            embed.add_field(name="🏆 Best DPS Parses", value=parse_text, inline=False)
 
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
         await interaction.followup.send(f"❌ Error retrieving report: `{str(e)}`")
 
-# === Hello/testtoken commands unchanged ===
-@tree.command(name="hello", description="Simple test", guild=discord.Object(id=GUILD_ID))
-async def hello(interaction: discord.Interaction):
-    await interaction.response.send_message("Hello from slash command!")
-
-@tree.command(name="testtoken", description="Test if the bot can acquire an FFLogs OAuth token", guild=discord.Object(id=GUILD_ID))
-async def testtoken(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True)
+# === /fflogs Command ===
+@tree.command(name="fflogs",description="Get FFLogs data for a FFXIV character",guild=discord.Object(id=GUILD_ID))
+async def fflogs(
+    interaction: discord.Interaction,
+    character: str,  # expects "Name Surname@Server"
+    region: str = "EU"
+):
+    await interaction.response.defer()
     try:
-        await get_fflogs_token()
-        if access_token:
-            await interaction.followup.send("✅ Token successfully acquired and stored.")
-        else:
-            await interaction.followup.send("⚠️ No token was returned.")
+        full_name, server = character.split("@")
+        first_name, last_name = full_name.strip().split(" ", 1)
+        name = f"{first_name} {last_name}"
+    except ValueError:
+        await interaction.followup.send("❌ Please format character as `Name Surname@Server`.")
+        return
+
+    await get_fflogs_token()
+
+    query = """
+    query($name: String!, $server: String!, $region: String!) {
+      characterData {
+        character(name: $name, serverSlug: $server, serverRegion: $region) {
+          name
+          server { name }
+          zoneRankings
+        }
+      }
+    }
+    """
+
+    variables = {"name": name, "server": server, "region": region}
+    try:
+        headers = {"Authorization": f"Bearer {access_token}"}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://www.fflogs.com/api/v2/client",
+                json={"query": query, "variables": variables},
+                headers=headers
+            ) as resp:
+                data = await resp.json()
+
+        char = data["data"]["characterData"]["character"]
+        rankings = char["zoneRankings"]["rankings"]
+
+        embed = discord.Embed(
+            title=f"FFLogs for {char['name']} @ {char['server']['name']} ({region})",
+            color=discord.Color.dark_purple()
+        )
+        for log in rankings[:5]:
+            embed.add_field(
+                name=log["encounter"]["name"],
+                value=f"Rank: {log['rankPercent']}% | Kills: {log['totalKills']}",
+                inline=False
+            )
+        await interaction.followup.send(embed=embed)
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed to get token:\n`{str(e)}`")
+        print("❌ Log fetch error:", e)
+        await interaction.followup.send(f"❌ Failed to retrieve logs:\n`{e}`")
 
 # === Sync commands on bot ready ===
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
+
     guild = discord.Object(id=GUILD_ID)
-    commands = await tree.fetch_commands(guild=guild)
-    for command in commands:
-        tree.remove_command(command.name, type=discord.AppCommandType.chat_input, guild=guild)
-    print("🧹 Old slash commands removed.")
-    synced = await tree.sync(guild=guild)
-    print(f"🔁 Synced {len(synced)} command(s) to guild {GUILD_ID}")
+
+    # Sync guild and global commands
+    guild_synced = await tree.sync(guild=guild)
+    print(f"🔁 Synced {len(guild_synced)} guild command(s):")
+    for cmd in guild_synced:
+        print(f"   - /{cmd.name} ({cmd.description})")
+
+    global_synced = await tree.sync()
+    print(f"🌍 Synced {len(global_synced)} global command(s):")
+    for cmd in global_synced:
+        print(f"   - /{cmd.name} ({cmd.description})")
 
 bot.run(DISCORD_TOKEN)
