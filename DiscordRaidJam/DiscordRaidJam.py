@@ -143,7 +143,13 @@ async def logreport(interaction: discord.Interaction, link: str):
             parse_text = "\n".join(f"{name}: {percent:.1f}%" for name, percent in sorted_parses)
             embed.add_field(name="🏆 Best DPS Parses", value=parse_text, inline=False)
 
-        await interaction.followup.send(embed=embed)
+            embed.add_field(
+            name="🔗 [View on Website](https://www.fflogs.com/reports/{})".format(report_id),
+            value="Click the link to view the full report online.",
+            inline=False
+        )
+
+        await interaction.followup.send(embed=embed)    
 
     except Exception as e:
         await interaction.followup.send(f"❌ Error retrieving report: `{str(e)}`")
