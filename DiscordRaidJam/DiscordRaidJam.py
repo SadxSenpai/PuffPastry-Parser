@@ -118,17 +118,23 @@ async def logreport(interaction: discord.Interaction, link: str):
         embed = discord.Embed(title=f"FFLogs Report: {report_id}", color=0xB71C1C)
         for eid, fights in encounters.items():
             ename = encounter_names.get(eid, f"Encounter {eid}")
-            kills = sum(1 for f in fights if f["kill"])
-            wipes = len(fights) - kills
-            summary = f"✅ Kills: {kills} | ❌ Wipes: {wipes}\n"
+            # Separate kills and wipes
+            kills = [f for f in fights if f["kill"]]
+            wipes = sorted(
+                [f for f in fights if not f["kill"]],
+                key=lambda f: f.get("bossPercentage", 100)  # sort by HP left ascending
+            )
 
-            for f in fights:
+            summary = f"✅ Kills: {len(kills)} | ❌ Wipes: {len(wipes)}\n"
+
+            for f in kills:
                 duration = (f["endTime"] - f["startTime"]) // 1000
-                if f["kill"]:
-                    summary += f"✅ Kill | Duration: {duration}s\n"
-                else:
-                    hp = f.get("bossPercentage", 0)
-                    summary += f"❌ Wipe | Boss HP: {hp:.1f}% | Duration: {duration}s\n"
+                summary += f"✅ Kill | Duration: {duration}s\n"
+
+            for f in wipes:
+                duration = (f["endTime"] - f["startTime"]) // 1000
+                hp = f.get("bossPercentage", 100)
+                summary += f"❌ Wipe | Boss HP: {hp:.1f}% | Duration: {duration}s\n"
 
             embed.add_field(name=ename, value=summary, inline=False)
 
