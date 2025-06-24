@@ -1,8 +1,10 @@
 ﻿import discord
 from discord.ext import commands
+from discord import app_commands
 import aiohttp
 import json
-import base64
+import re
+from datetime import datetime
 
 # === Load config ===
 with open("config.json") as f:
@@ -17,58 +19,134 @@ GUILD_ID = 693821560028528680
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
-access_token = None  # Cached FFLogs OAuth token
+access_token = None
 
 # === Get OAuth token from FFLogs ===
 async def get_fflogs_token():
     global access_token
     url = "https://www.fflogs.com/oauth/token"
-    auth = aiohttp.BasicAuth(FFLOGS_CLIENT_ID, FFLOGS_CLIENT_SECRET)
     async with aiohttp.ClientSession() as session:
         async with session.post(
             url,
-            data={"grant_type": "client_credentials"},
-            auth=auth
+            data={
+                "grant_type": "client_credentials",
+                "client_id": FFLOGS_CLIENT_ID,
+                "client_secret": FFLOGS_CLIENT_SECRET
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"}
         ) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                access_token = data["access_token"]
-                print("✅ FFLogs v2 token acquired.")
-            else:
-                text = await resp.text()
-                raise Exception(f"Token request failed: {resp.status}, {text}")
+            data = await resp.json()
+            access_token = data.get("access_token")
+            print("✅ FFLogs v2 token acquired.")
 
-# === Query FFLogs v2 GraphQL API ===
-async def query_fflogs(query, variables):
-    global access_token
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://www.fflogs.com/api/v2/client",
-            json={"query": query, "variables": variables},
-            headers=headers
-        ) as resp:
-            resp_json = await resp.json()
-            if "errors" in resp_json:
-                raise Exception(resp_json["errors"][0].get("message", resp_json["errors"]))
-            if "data" not in resp_json:
-                raise Exception(f"Unexpected response structure: {resp_json}")
-            return resp_json
+# === /logreport Command ===
+@tree.command(name="logreport", description="Analyze a FFLogs report link")
+@app_commands.describe(link="The FFLogs report link (e.g. https://www.fflogs.com/reports/XXXXX)")
+async def logreport(interaction: discord.Interaction, link: str):
+    await interaction.response.defer()
+    report_id = link.split("/")[-1].split("#")[0]
 
-# === Slash Command: /hello ===
+    try:
+        token = await get_fflogs_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        query = '''
+        query($code: String!) {
+          reportData {
+            report(code: $code) {
+              fights {
+                id
+                startTime
+                endTime
+                kill
+                bossPercentage
+                encounterID
+              }
+              rankings {
+                data {
+                  fightID
+                  encounter {
+                    id
+                    name
+                  }
+                  roles {
+                    dps {
+                      characters {
+                        name
+                        rankPercent
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        '''
+        variables = {"code": report_id}
+        response = await fetch_fflogs_v2(query, variables, headers)
+
+        if "data" not in response or "reportData" not in response["data"]:
+            raise Exception("'data' not in response")
+
+        report = response["data"]["reportData"]["report"]
+        fights = report["fights"]
+        rankings_data = report.get("rankings", {}).get("data", [])
+
+        encounter_names = {
+            r["fightID"]: r["encounter"]["name"]
+            for r in rankings_data if "encounter" in r and "name" in r["encounter"]
+        }
+
+        player_best_parses = {}
+        for r in rankings_data:
+            for dps in r.get("roles", {}).get("dps", {}).get("characters", []):
+                name = dps["name"]
+                rank_percent = dps.get("rankPercent", 0)
+                if name not in player_best_parses or player_best_parses[name] < rank_percent:
+                    player_best_parses[name] = rank_percent
+
+        # Group fights by encounterID
+        encounters = {}
+        for fight in fights:
+            eid = fight["encounterID"]
+            if eid == 0:
+                continue  # skip trash pulls
+            encounters.setdefault(eid, []).append(fight)
+
+        embed = discord.Embed(title=f"FFLogs Report: {report_id}", color=0xB71C1C)
+        for eid, fight_list in encounters.items():
+            fight_name = next((r["encounter"]["name"] for r in rankings_data if r["encounter"]["id"] == eid), f"Encounter {eid}")
+            kills = sum(1 for f in fight_list if f["kill"])
+            wipes = len(fight_list) - kills
+            summary = f"✅ Kills: {kills} | ❌ Wipes: {wipes}\n"
+
+            for f in fight_list:
+                duration = (f["endTime"] - f["startTime"]) // 1000
+                if f["kill"]:
+                    status = f"✅ Kill | Duration: {duration}s"
+                else:
+                    hp = f.get("bossPercentage", 0.0)
+                    status = f"❌ Wipe | Boss HP: {hp:.1f}% | Duration: {duration}s"
+                summary += f"{status}\n"
+
+            embed.add_field(name=fight_name, value=summary, inline=False)
+
+        if player_best_parses:
+            top_parsers = sorted(player_best_parses.items(), key=lambda x: x[1], reverse=True)
+            parse_summary = "\n".join([f"{name}: {percent:.2f}%" for name, percent in top_parsers])
+            embed.add_field(name="🏆 Best Player Parses", value=parse_summary, inline=False)
+
+        await interaction.followup.send(embed=embed)
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error retrieving report: `{str(e)}`")
+
+# === Hello/testtoken commands unchanged ===
 @tree.command(name="hello", description="Simple test", guild=discord.Object(id=GUILD_ID))
 async def hello(interaction: discord.Interaction):
     await interaction.response.send_message("Hello from slash command!")
 
-# === Slash Command: /testtoken ===
-@tree.command(
-    name="testtoken",
-    description="Test if the bot can acquire an FFLogs OAuth token",
-    guild=discord.Object(id=GUILD_ID)
-)
+@tree.command(name="testtoken", description="Test if the bot can acquire an FFLogs OAuth token", guild=discord.Object(id=GUILD_ID))
 async def testtoken(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True)
     try:
@@ -80,62 +158,7 @@ async def testtoken(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Failed to get token:\n`{str(e)}`")
 
-# === Slash Command: /fflogs ===
-@tree.command(
-    name="fflogs",
-    description="Get FFLogs data for a FFXIV character",
-    guild=discord.Object(id=GUILD_ID)
-)
-async def fflogs(
-    interaction: discord.Interaction,
-    character: str,  # expects "Name Surname@Server"
-    region: str = "EU"
-):
-    await interaction.response.defer()
-    try:
-        full_name, server = character.split("@")
-        first_name, last_name = full_name.strip().split(" ", 1)
-        name = f"{first_name} {last_name}"
-    except ValueError:
-        await interaction.followup.send("❌ Please format character as `Name Surname@Server`.")
-        return
-
-    await get_fflogs_token()
-
-    query = """
-    query($name: String!, $server: String!, $region: String!) {
-      characterData {
-        character(name: $name, serverSlug: $server, serverRegion: $region) {
-          name
-          server { name }
-          zoneRankings
-        }
-      }
-    }
-    """
-
-    variables = {"name": name, "server": server, "region": region}
-    try:
-        data = await query_fflogs(query, variables)
-        char = data["data"]["characterData"]["character"]
-        rankings = char["zoneRankings"]["rankings"]
-
-        embed = discord.Embed(
-            title=f"FFLogs for {char['name']} @ {char['server']['name']} ({region})",
-            color=discord.Color.dark_purple()
-        )
-        for log in rankings[:5]:
-            embed.add_field(
-                name=log["encounter"]["name"],
-                value=f"Rank: {log['rankPercent']}% | Kills: {log['totalKills']}",
-                inline=False
-            )
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        print("❌ Log fetch error:", e)
-        await interaction.followup.send(f"❌ Failed to retrieve logs:\n`{e}`")
-
-# === Sync commands on ready ===
+# === Sync commands on bot ready ===
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
@@ -147,5 +170,4 @@ async def on_ready():
     synced = await tree.sync(guild=guild)
     print(f"🔁 Synced {len(synced)} command(s) to guild {GUILD_ID}")
 
-# === Run bot ===
 bot.run(DISCORD_TOKEN)
