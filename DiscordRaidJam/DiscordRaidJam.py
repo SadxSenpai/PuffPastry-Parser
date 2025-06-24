@@ -48,7 +48,7 @@ async def fetch_fflogs_v2(query, variables, headers):
             return await resp.json()
 
 # === /logreport Command ===
-@tree.command(name="logreport", description="Analyze a FFLogs report link", guild=discord.Object(id=GUILD_ID))
+@tree.command(name="logreport", description="Analyze a FFLogs report link")
 @app_commands.describe(link="The FFLogs report link (e.g. https://www.fflogs.com/reports/XXXXX)")
 async def logreport(interaction: discord.Interaction, link: str):
     await interaction.response.defer()
@@ -143,7 +143,7 @@ async def logreport(interaction: discord.Interaction, link: str):
         await interaction.followup.send(f"❌ Error retrieving report: `{str(e)}`")
 
 # === /fflogs Command ===
-@tree.command(name="fflogs",description="Get FFLogs data for a FFXIV character",guild=discord.Object(id=GUILD_ID))
+@tree.command(name="fflogs",description="Get FFLogs data for a FFXIV character")
 async def fflogs(
     interaction: discord.Interaction,
     character: str,  # expects "Name Surname@Server"
