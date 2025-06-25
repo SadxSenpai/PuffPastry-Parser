@@ -116,6 +116,13 @@ async def logreport(interaction: discord.Interaction, link: str):
 
         # Build embed
         embed = discord.Embed(title=f"FFLogs Report: {report_id}", color=0xB71C1C)
+        
+        embed.add_field(
+        name="🔗 [View on Website](https://www.fflogs.com/reports/{})".format(report_id),
+        value="Click the link to view the full report online.",
+        inline=False
+        )
+        
         for eid, fights in encounters.items():
             ename = encounter_names.get(eid, f"Encounter {eid}")
             # Separate kills and wipes
@@ -142,12 +149,6 @@ async def logreport(interaction: discord.Interaction, link: str):
             sorted_parses = sorted(player_best_parses.items(), key=lambda x: x[1], reverse=True)
             parse_text = "\n".join(f"{name}: {percent:.1f}%" for name, percent in sorted_parses)
             embed.add_field(name="🏆 Best DPS Parses", value=parse_text, inline=False)
-
-            embed.add_field(
-            name="🔗 [View on Website](https://www.fflogs.com/reports/{})".format(report_id),
-            value="Click the link to view the full report online.",
-            inline=False
-        )
 
         await interaction.followup.send(embed=embed)    
 
