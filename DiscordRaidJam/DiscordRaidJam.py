@@ -5,21 +5,38 @@ import aiohttp
 import json
 from datetime import datetime
 import asyncio
+from urllib.parse import quote
 
-# === Parse Color Helper ===
-def get_parse_color(percent):
-    if percent == 100:
-        return 0xe5cc80  # Gold
-    elif percent >= 95:
-        return 0xff8000  # Orange
-    elif percent >= 75:
-        return 0xa335ee  # Purple
-    elif percent >= 50:
-        return 0x0070dd  # Blue
-    elif percent >= 25:
-        return 0x1eff00  # Green
-    else:
-        return 0x9d9d9d  # Gray
+# === Parse Color and Emoji Helper ===
+# def get_parse_color(percent):
+#     if percent == 100:
+#         return "🥇"
+#     elif percent >= 95:
+#         return "🏆"
+#     elif percent >= 75:
+#         return "💜"
+#     elif percent >= 50:
+#         return "💙"
+#     elif percent >= 25:
+#         return "💚"
+#     else:
+#         return "🤌"
+
+#     if rank is not None:
+#     rank = p["percent"]
+    
+#     if rank == 100:
+#         emoji = "👑"
+#     elif rank >= 95:
+#         emoji = "🏆"
+#     elif rank >= 75:
+#         emoji = "💙"
+#     elif rank >= 50:
+#         emoji = "💙"
+#     elif rank >= 25:
+#         emoji = "💚"
+#     else:
+#         emoji = "🤌"
 
 # === Load config ===
 with open("config.json") as f:
@@ -62,6 +79,7 @@ async def fetch_fflogs_v2(query, variables, headers):
         async with session.post(url, json={"query": query, "variables": variables}, headers=headers) as resp:
             return await resp.json()
 
+# === /logreport Command ===
 @tree.command(name="logreport", description="Analyze a FFLogs report link")
 @app_commands.describe(link="The FFLogs report link (e.g. https://www.fflogs.com/reports/XXXXX)")
 async def logreport(interaction: discord.Interaction, link: str):
@@ -71,7 +89,6 @@ async def logreport(interaction: discord.Interaction, link: str):
     try:
         token = await get_fflogs_token()
         headers = {"Authorization": f"Bearer {token}"}
-
         query = '''
         query($code: String!) {
           reportData {
@@ -91,77 +108,103 @@ async def logreport(interaction: discord.Interaction, link: str):
         '''
         variables = {"code": report_id}
         response = await fetch_fflogs_v2(query, variables, headers)
+
         report = response["data"]["reportData"]["report"]
-
         fights = report["fights"]
-        rankings = report.get("rankings", {}).get("data", [])
 
-        encounter_map = {}
-        kill_map = {}
-        wipe_map = {}
+        try:
+            rankings_json = report.get("rankings", {})
+        except json.JSONDecodeError:
+            rankings_json = {}
+
+        encounter_names = {}
+        encounter_kills = {}
+        encounter_wipes = {}
+        parse_map = {}
+
+        for r in rankings_json.get("data", []):
+            enc = r.get("encounter", {})
+            eid = enc.get("id")
+            ename = enc.get("name", f"Encounter {eid}")
+            encounter_names[eid] = ename
 
         for fight in fights:
             eid = fight["encounterID"]
             if eid == 0:
                 continue
-            encounter_map.setdefault(eid, {"kills": [], "wipes": []})
             if fight["kill"]:
-                encounter_map[eid]["kills"].append(fight)
+                encounter_kills.setdefault(eid, []).append(fight)
             else:
-                encounter_map[eid]["wipes"].append(fight)
+                encounter_wipes.setdefault(eid, []).append(fight)
 
-        # Map parses by (encounterID, fightID)
-        parse_map = {}
-        encounter_names = {}
-        for r in rankings:
-            enc = r.get("encounter", {})
-            eid = enc.get("id")
-            ename = enc.get("name", f"Encounter {eid}")
-            encounter_names[eid] = ename
-            for role in r.get("roles", {}).values():
-                for char in role.get("characters", []):
-                    fid = char.get("fightID")
-                    if fid is None:
+        for r in rankings_json.get("data", []):
+            eid = r.get("encounter", {}).get("id")
+            fid = r.get("fightID")
+            if eid is None or fid is None:
+                continue
+
+            roles = r.get("roles", {})
+            for role_type in ["tanks", "healers", "dps"]:
+                characters = roles.get(role_type, {}).get("characters", [])
+                for char in characters:
+                    # Ignore partner parses by skipping duplicates with name_2
+                    if "name_2" in char:
                         continue
-                    key = (eid, fid)
-                    parse_map.setdefault(key, []).append({
-                        "name": char["name"],
-                        "spec": char.get("spec", "?"),
-                        "percent": char.get("rankPercent", 0.0)
+                    name = char.get("name")
+                    percent = char.get("rankPercent", 0)
+                    parse_map.setdefault((eid, fid), []).append({
+                        "name": name,
+                        "role": role_type,
+                        "percent": percent
                     })
 
-        embed = discord.Embed(
-            title=f"FFLogs Report: {report_id}",
-            color=0xB71C1C,
-            description=f"[🔗 View on Website](https://www.fflogs.com/reports/{report_id})\nClick the link to view the full report online."
+        embed = discord.Embed(title=f"FFLogs Report: {report_id}", color=0xB71C1C)
+        embed.add_field(
+            name="🔗 [View on Website](https://www.fflogs.com/reports/{})".format(report_id),
+            value="Click the link to view the full report online.",
+            inline=False
         )
 
-        for eid, data in encounter_map.items():
-            ename = encounter_names.get(eid, f"Encounter {eid}")
-            summary = f"__**{ename}**__\n\n"
+        for eid, ename in encounter_names.items():
+            if eid not in encounter_kills and eid not in encounter_wipes:
+                continue
 
-            for fight in data["kills"]:
-                fid = fight["id"]
-                duration = (fight["endTime"] - fight["startTime"]) // 1000
+            summary = ""
+
+            for kill in encounter_kills.get(eid, []):
+                fid = kill["id"]
+                duration = (kill["endTime"] - kill["startTime"]) // 1000
                 summary += f"🔥 **Kill** | Duration: {duration}s\n"
 
-                parses = parse_map.get((eid, fid), [])
+                parses = parse_map.get((eid, fid), [])[:8]  # Limit to 8 players per fight
+
                 if parses:
-                    lines = {}
-                    for p in parses:
-                        key = f"{p['name']} ({p['spec']})"
-                        lines.setdefault(key, []).append(p["percent"])
                     summary += "```\n"
-                    for player, percents in lines.items():
-                        percents_str = ", ".join(f"{x:.1f}%" for x in percents)
-                        summary += f"{player}: {percents_str}\n"
+                    for p in parses:
+                        icon = {
+                            "tanks": "🛡️",
+                            "healers": "💖",
+                            "dps": "⚔️"
+                        }.get(p["role"], "❔")
+
+                        percent = p["percent"]
+                        rank_emoji = (
+                            "🥇" if percent == 100 else
+                            "🏆" if percent >= 95 else
+                            "💜" if percent >= 75 else
+                            "💙" if percent >= 50 else
+                            "💚" if percent >= 25 else
+                            "🤌"
+                        )
+                        summary += f"{rank_emoji} {icon} {p['name']}: {percent:.1f}%\n"
                     summary += "```\n"
 
-            if data["wipes"]:
-                summary += "**Wipes**\n"
-                for wipe in data["wipes"]:
-                    hp = wipe.get("bossPercentage", 100)
+            wipes = encounter_wipes.get(eid, [])
+            if wipes:
+                summary += f"**Wipes**\n"
+                for wipe in wipes:
                     duration = (wipe["endTime"] - wipe["startTime"]) // 1000
+                    hp = wipe.get("bossPercentage", 100)
                     summary += f"💀 Boss HP: {hp:.1f}% | Duration: {duration}s\n"
 
             embed.add_field(name=ename, value=summary, inline=False)
@@ -169,10 +212,9 @@ async def logreport(interaction: discord.Interaction, link: str):
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Error: `{str(e)}`")
+        await interaction.followup.send(f"\u274c Error retrieving report: `{str(e)}`")
 
-
-# === /fflogs Command ===
+## === /fflogs Command ===
 @tree.command(name="fflogs", description="Get FFLogs data for a FFXIV character")
 async def fflogs(
     interaction: discord.Interaction,
@@ -216,16 +258,34 @@ async def fflogs(
         char = data["data"]["characterData"]["character"]
         rankings = char["zoneRankings"]["rankings"]
 
+        encoded_name = quote(char["name"])
+        profile_url = f"https://www.fflogs.com/character/{region}/{char['server']['name']}/{encoded_name}"
+
         embed = discord.Embed(
             title=f"FFLogs for {char['name']} @ {char['server']['name']} ({region})",
+            description=f"[View on FFLogs]({profile_url})",
             color=discord.Color.dark_purple()
-        )
+)
+
+
+        def parse_emoji(percent):
+            return (
+                "🥇" if percent == 100 else
+                "🏆" if percent >= 95 else
+                "💜" if percent >= 75 else
+                "💙" if percent >= 50 else
+                "💚" if percent >= 25 else
+                "🤌"
+            )
+
         for log in rankings[:5]:
-            color_hex = get_parse_color(log['rankPercent'])
-            emoji = "\U0001f947" if log['rankPercent'] == 100 else ""
+            percent = log.get('rankPercent', 0)
+            emoji = parse_emoji(percent)
+            encounter = log['encounter']['name']
+            kills = log.get('totalKills', 0)
             embed.add_field(
-                name=f"{emoji} {log['encounter']['name']}",
-                value=f"Rank: `{log['rankPercent']}%` | Kills: `{log['totalKills']}`",
+                name=f"{encounter}",
+                value=f"{emoji} Rank: **{percent:.2f}%** | 🗡️ Kills: `{kills}`",
                 inline=False
             )
 
