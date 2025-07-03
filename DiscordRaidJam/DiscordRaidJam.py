@@ -265,10 +265,12 @@ async def fflogs(
             title=f"FFLogs for {char['name']} @ {char['server']['name']} ({region})",
             description=f"[View on FFLogs]({profile_url})",
             color=discord.Color.dark_purple()
-)
+        )
 
 
         def parse_emoji(percent):
+            if percent is None:
+                return "Unkilled"  # default for unknown rank
             return (
                 "🥇" if percent == 100 else
                 "🏆" if percent >= 95 else
@@ -279,13 +281,14 @@ async def fflogs(
             )
 
         for log in rankings[:5]:
-            percent = log.get('rankPercent', 0)
+            percent = log.get('rankPercent')
             emoji = parse_emoji(percent)
+            percent_display = f"{percent:.2f}%" if percent is not None else "N/A"
             encounter = log['encounter']['name']
             kills = log.get('totalKills', 0)
             embed.add_field(
                 name=f"{encounter}",
-                value=f"{emoji} Rank: **{percent:.2f}%** | 🗡️ Kills: `{kills}`",
+                value=f"{emoji} Rank: **{percent_display}** | 🗡️ Kills: `{kills}`",
                 inline=False
             )
 
