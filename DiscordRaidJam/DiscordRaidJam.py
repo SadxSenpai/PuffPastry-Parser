@@ -7,37 +7,6 @@ from datetime import datetime
 import asyncio
 from urllib.parse import quote
 
-# === Parse Color and Emoji Helper ===
-# def get_parse_color(percent):
-#     if percent == 100:
-#         return "🥇"
-#     elif percent >= 95:
-#         return "🏆"
-#     elif percent >= 75:
-#         return "💜"
-#     elif percent >= 50:
-#         return "💙"
-#     elif percent >= 25:
-#         return "💚"
-#     else:
-#         return "🤌"
-
-#     if rank is not None:
-#     rank = p["percent"]
-    
-#     if rank == 100:
-#         emoji = "👑"
-#     elif rank >= 95:
-#         emoji = "🏆"
-#     elif rank >= 75:
-#         emoji = "💙"
-#     elif rank >= 50:
-#         emoji = "💙"
-#     elif rank >= 25:
-#         emoji = "💚"
-#     else:
-#         emoji = "🤌"
-
 # === Load config ===
 with open("config.json") as f:
     config = json.load(f)
