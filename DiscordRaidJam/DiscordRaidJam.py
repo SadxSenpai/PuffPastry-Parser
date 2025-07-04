@@ -3,9 +3,9 @@ from discord.ext import commands
 from discord import app_commands
 import aiohttp
 import json
-from datetime import datetime
 import asyncio
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, parse_qs
+import requests
 
 # === Load config ===
 with open("config.json") as f:

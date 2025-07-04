@@ -1,0 +1,5 @@
+{
+  "devDependencies": {
+    "@types/minimatch": "^5.1.2"
+  }
+}
