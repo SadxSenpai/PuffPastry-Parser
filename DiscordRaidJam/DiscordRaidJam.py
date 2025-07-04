@@ -48,6 +48,34 @@ async def fetch_fflogs_v2(query, variables, headers):
         async with session.post(url, json={"query": query, "variables": variables}, headers=headers) as resp:
             return await resp.json()
 
+# === Add the paginator for embeds ===
+class EncounterPaginator(discord.ui.View):
+    def __init__(self, embeds, encounter_names):
+        super().__init__(timeout=300)
+        self.embeds = embeds
+        self.encounter_ids = list(encounter_names.keys())
+        self.encounter_names = encounter_names
+        self.index = 0
+
+        for i, eid in enumerate(self.encounter_ids[:25]):  # Discord limit
+            label = encounter_names[eid][:20]  # Truncate for button space
+            self.add_item(self.EncounterButton(i, label, self))
+
+    async def update(self, interaction: discord.Interaction):
+        embed = self.embeds[self.index]
+        embed.set_footer(text=f"Page {self.index + 1} / {len(self.embeds)}")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    class EncounterButton(discord.ui.Button):
+        def __init__(self, index, label, parent_view):
+            super().__init__(label=label, style=discord.ButtonStyle.secondary)
+            self.index = index
+            self.parent_view = parent_view
+
+        async def callback(self, interaction: discord.Interaction):
+            self.parent_view.index = self.index
+            await self.parent_view.update(interaction)
+
 # === /logreport Command ===
 @tree.command(name="logreport", description="Analyze a FFLogs report link")
 @app_commands.describe(link="The FFLogs report link (e.g. https://www.fflogs.com/reports/XXXXX)")
@@ -101,6 +129,10 @@ async def logreport(interaction: discord.Interaction, link: str):
             eid = fight["encounterID"]
             if eid == 0:
                 continue
+
+            if eid not in encounter_names:
+                encounter_names[eid] = f"Encounter {eid}"
+
             if fight["kill"]:
                 encounter_kills.setdefault(eid, []).append(fight)
             else:
@@ -116,7 +148,6 @@ async def logreport(interaction: discord.Interaction, link: str):
             for role_type in ["tanks", "healers", "dps"]:
                 characters = roles.get(role_type, {}).get("characters", [])
                 for char in characters:
-                    # Ignore partner parses by skipping duplicates with name_2
                     if "name_2" in char:
                         continue
                     name = char.get("name")
@@ -127,12 +158,7 @@ async def logreport(interaction: discord.Interaction, link: str):
                         "percent": percent
                     })
 
-        embed = discord.Embed(title=f"FFLogs Report: {report_id}", color=0xB71C1C)
-        embed.add_field(
-            name="🔗 [View on Website](https://www.fflogs.com/reports/{})".format(report_id),
-            value="Click the link to view the full report online.",
-            inline=False
-        )
+        boss_embeds = []
 
         for eid, ename in encounter_names.items():
             if eid not in encounter_kills and eid not in encounter_wipes:
@@ -145,8 +171,7 @@ async def logreport(interaction: discord.Interaction, link: str):
                 duration = (kill["endTime"] - kill["startTime"]) // 1000
                 summary += f"🔥 **Kill** | Duration: {duration}s\n"
 
-                parses = parse_map.get((eid, fid), [])[:8]  # Limit to 8 players per fight
-
+                parses = parse_map.get((eid, fid), [])[:8]
                 if parses:
                     summary += "```\n"
                     for p in parses:
@@ -176,9 +201,22 @@ async def logreport(interaction: discord.Interaction, link: str):
                     hp = wipe.get("bossPercentage", 100)
                     summary += f"💀 Boss HP: {hp:.1f}% | Duration: {duration}s\n"
 
-            embed.add_field(name=ename, value=summary, inline=False)
+            embed = discord.Embed(
+                title=f"{ename} – FFLogs Report: {report_id}",
+                description=summary[:4000],
+                color=0xB71C1C
+            )
+            embed.add_field(
+                name="🔗 View on Website",
+                value=f"[Open full report](https://www.fflogs.com/reports/{report_id})",
+                inline=False
+            )
+            boss_embeds.append(embed)
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(
+            embed=boss_embeds[0],
+            view=EncounterPaginator(boss_embeds, encounter_names)
+        )
 
     except Exception as e:
         await interaction.followup.send(f"\u274c Error retrieving report: `{str(e)}`")
@@ -267,7 +305,7 @@ async def fflogs(
         await interaction.followup.send(f"\u274c Failed to retrieve logs:\n`{e}`")
 
 # === /dancepartner Command ===
-@tree.command(name="dancepartner", description="Suggest the best Dance Partner based on a FFLogs report.")
+@tree.command(name="dancepartner", description="Suggest the best Dance Partner based on a FFLogs report.", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(link="The FFLogs report link (e.g. https://www.fflogs.com/reports/XXXXX?fight=Y)")
 async def dancepartner(interaction: discord.Interaction, link: str):
     await interaction.response.defer()
