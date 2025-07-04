@@ -24,6 +24,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="DiscordRaidJam.py" />
+    <Compile Include="utils.py" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="config.json" />
