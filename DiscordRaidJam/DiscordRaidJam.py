@@ -272,17 +272,20 @@ async def fflogs(
 async def dancepartner(interaction: discord.Interaction, link: str):
     await interaction.response.defer()
 
+    # Extract report ID and fight ID from the URL
     try:
         parsed = urlparse(link)
         report_id = parsed.path.split("/")[-1]
         fight_id = int(parse_qs(parsed.query).get("fight", [0])[0])
     except Exception as e:
-        await interaction.followup.send(f"❌ Invalid FFLogs link format: {e}")
+        await interaction.followup.send(f"❌ Invalid FFLogs link format: `{e}`")
         return
 
+    # Get FFLogs token
     token = await get_fflogs_token()
     headers = {"Authorization": f"Bearer {token}"}
 
+    # Query FFLogs
     query = '''
     query($code: String!, $fight: Int!) {
       reportData {
@@ -301,17 +304,27 @@ async def dancepartner(interaction: discord.Interaction, link: str):
                 headers=headers
             ) as resp:
                 raw = await resp.json()
+        
+        # Check for FFLogs API errors
+        if "errors" in raw:
+            raise ValueError(raw["errors"][0]["message"])
 
-        table_data = raw["data"]["reportData"]["report"]["table"]
-        data = json.loads(table_data)  # parse the raw JSON inside `table`
-        entries = data["entries"]
-        total_time = data["totalTime"] / 1000
+        table_raw = raw["data"]["reportData"]["report"]["table"]
+        if not table_raw:
+            raise ValueError("Table data is empty or missing.")
+
+        # Parse the raw JSON string inside the `table` field
+        data = table_raw
+        entries = data.get("entries", [])
+        total_time = data.get("totalTime", 0) / 1000
+        if not entries or total_time == 0:
+            raise ValueError("No combat entries or invalid duration.")
     except Exception as e:
         print("❌ Dance Partner error:", e)
-        await interaction.followup.send("❌ Dance Partner error: Unable to parse entries from FFLogs table")
+        await interaction.followup.send(f"❌ Dance Partner error: Unable to parse entries from FFLogs table\n`{e}`")
         return
 
-    # Calculate buff impact
+    # Calculate RDPS from dancer buffs
     buff_names = ["Standard Finish", "Devilment", "Technical Finish"]
     results = []
     for player in entries:
@@ -351,7 +364,7 @@ async def dancepartner(interaction: discord.Interaction, link: str):
         description="```\n" + "\n".join(lines) + "\n```",
         color=discord.Color.purple()
     )
-    embed.set_footer(text="Source: FFLogs – DamageDone Table")
+    embed.set_footer(text="Source: FFLogs (DamageDone table)")
     await interaction.followup.send(embed=embed)
 
 # === Sync commands on bot ready ===
