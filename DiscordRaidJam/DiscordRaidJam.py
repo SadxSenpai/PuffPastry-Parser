@@ -266,6 +266,94 @@ async def fflogs(
         print("\u274c Log fetch error:", e)
         await interaction.followup.send(f"\u274c Failed to retrieve logs:\n`{e}`")
 
+# === /dancepartner Command ===
+@tree.command(name="dancepartner", description="Suggest the best Dance Partner based on a FFLogs report.")
+@app_commands.describe(link="The FFLogs report link (e.g. https://www.fflogs.com/reports/XXXXX?fight=Y)")
+async def dancepartner(interaction: discord.Interaction, link: str):
+    await interaction.response.defer()
+
+    try:
+        parsed = urlparse(link)
+        report_id = parsed.path.split("/")[-1]
+        fight_id = int(parse_qs(parsed.query).get("fight", [0])[0])
+    except Exception as e:
+        await interaction.followup.send(f"❌ Invalid FFLogs link format: {e}")
+        return
+
+    token = await get_fflogs_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    query = '''
+    query($code: String!, $fight: Int!) {
+      reportData {
+        report(code: $code) {
+          table(dataType: DamageDone, fightIDs: [$fight])
+        }
+      }
+    }'''
+    variables = {"code": report_id, "fight": fight_id}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://www.fflogs.com/api/v2/client",
+                json={"query": query, "variables": variables},
+                headers=headers
+            ) as resp:
+                raw = await resp.json()
+
+        table_data = raw["data"]["reportData"]["report"]["table"]
+        data = json.loads(table_data)  # parse the raw JSON inside `table`
+        entries = data["entries"]
+        total_time = data["totalTime"] / 1000
+    except Exception as e:
+        print("❌ Dance Partner error:", e)
+        await interaction.followup.send("❌ Dance Partner error: Unable to parse entries from FFLogs table")
+        return
+
+    # Calculate buff impact
+    buff_names = ["Standard Finish", "Devilment", "Technical Finish"]
+    results = []
+    for player in entries:
+        name = player.get("name")
+        job = player.get("type")
+        taken = player.get("taken", [])
+        buffs = {b["name"]: b["total"] for b in taken if b["name"] in buff_names}
+        total = sum(buffs.values())
+        rdps = round(total / total_time, 2) if total_time else 0
+        results.append({
+            "name": name,
+            "job": job,
+            "standard": buffs.get("Standard Finish", 0),
+            "devilment": buffs.get("Devilment", 0),
+            "esprit": buffs.get("Technical Finish", 0),
+            "total": total,
+            "rdps": rdps
+        })
+
+    results = sorted(results, key=lambda r: r["rdps"], reverse=True)
+    top = results[0]["rdps"] if results else 0
+
+    def fmt(v): return f"{v:,.2f}" if isinstance(v, float) else f"{v:,}"
+
+    lines = [
+        f"{'Name':<20} | {'Job':<12} | {'Standard':>10} | {'Devilment':>10} | {'Esprit':>10} | {'Total':>10} | {'RDPS':>8}",
+        "-" * 95
+    ]
+    for row in results:
+        hl = "**" if row["rdps"] == top else ""
+        lines.append(
+            f"{hl}{row['name']:<20} | {row['job']:<12} | {fmt(row['standard']):>10} | {fmt(row['devilment']):>10} | {fmt(row['esprit']):>10} | {fmt(row['total']):>10} | {fmt(row['rdps']):>8}{hl}"
+        )
+
+    embed = discord.Embed(
+        title="Dance Partner RDPS Gains",
+        description="```\n" + "\n".join(lines) + "\n```",
+        color=discord.Color.purple()
+    )
+    embed.set_footer(text="Source: FFLogs – DamageDone Table")
+    await interaction.followup.send(embed=embed)
+
 # === Sync commands on bot ready ===
 @bot.event
 async def on_ready():
