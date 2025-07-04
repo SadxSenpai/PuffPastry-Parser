@@ -29,6 +29,7 @@
   <ItemGroup>
     <Content Include="config.json" />
     <Content Include="README.md" />
+    <Content Include="TODO.md" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">
