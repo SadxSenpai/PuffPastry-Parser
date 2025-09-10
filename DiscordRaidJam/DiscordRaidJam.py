@@ -15,9 +15,8 @@ with open("config.json") as f:
     config = json.load(f)
 
 DISCORD_TOKEN = config["discord_token"]
-# If you still want FFLogs features, uncomment these and ensure they exist in config.json
-# FFLOGS_CLIENT_ID = config["fflogs_client_id"]
-# FFLOGS_CLIENT_SECRET = config["fflogs_client_secret"]
+FFLOGS_CLIENT_ID = config["fflogs_client_id"]
+FFLOGS_CLIENT_SECRET = config["fflogs_client_secret"]
 GUILD_ID = 693821560028528680
 
 # === Bot setup (enable members intent for role toggling) ===
