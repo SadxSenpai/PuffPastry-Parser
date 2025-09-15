@@ -11,7 +11,9 @@ from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional
 
 # === Load config ===
-with open("config.json") as f:
+# config.json       = Live
+# config_test.json  = Testing environment
+with open("config_test.json") as f:
     config = json.load(f)
 
 DISCORD_TOKEN = config["discord_token"]
@@ -69,6 +71,7 @@ class PanelConfig:
     title: str
     role_ids: List[int]
     custom_id: str
+    body: str = ""  # editable message text shown on the panel
 
 def load_all_panels() -> Dict[str, PanelConfig]:
     if not os.path.exists(DATA_FILE):
@@ -156,6 +159,7 @@ class RolePanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(RoleToggleSelect(panel, guild))
 
+# ---------- Setup (create) flow with editable message ----------
 class AdminRolePicker(discord.ui.View):
     def __init__(self, panel_id: str, channel: discord.TextChannel, title: str):
         super().__init__(timeout=300)
@@ -167,6 +171,56 @@ class AdminRolePicker(discord.ui.View):
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="❎ Setup canceled.", view=None)
+
+class PanelSetupMessageModal(discord.ui.Modal):
+    def __init__(self, parent: "AdminRolePicker", role_ids: List[int]):
+        super().__init__(title="Reaction Roles: Panel Message")
+        self.parent = parent
+        self.role_ids = role_ids
+        # Default helper text; admin can change
+        default_text = "Use the dropdown below to add/remove the selected roles."
+        self.body_input = discord.ui.TextInput(
+            label="Panel message",
+            style=discord.TextStyle.paragraph,
+            default=default_text,
+            max_length=4000,
+            required=False,
+            placeholder="Describe what these roles mean, rules, etc."
+        )
+        self.add_item(self.body_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        body_text = (self.body_input.value or "").strip()
+        custom_id = f"rr_panel:{interaction.guild_id}:{self.parent.panel_id}"
+
+        # 1) Send the panel message first to obtain its message_id
+        embed = discord.Embed(
+            title=self.parent.title,
+            description=body_text,
+            color=discord.Color.blurple()
+        )
+        msg = await self.parent.channel.send(embed=embed)
+
+        # 2) Save config
+        panel = PanelConfig(
+            guild_id=interaction.guild_id,
+            channel_id=self.parent.channel.id,
+            message_id=msg.id,
+            title=self.parent.title,
+            role_ids=list(self.role_ids),
+            custom_id=custom_id,
+            body=body_text
+        )
+        PANELS[self.parent.panel_id] = panel
+        save_all_panels(PANELS)
+
+        # 3) Attach the interactive view
+        await msg.edit(view=RolePanelView(panel, interaction.guild))
+
+        await interaction.response.send_message(
+            content=f"✅ Panel created in {self.parent.channel.mention}.",
+            ephemeral=True
+        )
 
 class _AdminRoleSelect(discord.ui.RoleSelect):
     def __init__(self, parent: AdminRolePicker):
@@ -180,26 +234,83 @@ class _AdminRoleSelect(discord.ui.RoleSelect):
     async def callback(self, interaction: discord.Interaction):
         roles = [r for r in self.values if isinstance(r, discord.Role)]
         role_ids = [r.id for r in roles]
-        custom_id = f"rr_panel:{interaction.guild_id}:{self.parent.panel_id}"
-        msg = await self.parent.channel.send(
-            embed=discord.Embed(
-                title=self.parent.title,
-                description="Use the dropdown below to add/remove the selected roles.",
+        # Open modal to collect editable message before creating the panel
+        await interaction.response.send_modal(PanelSetupMessageModal(self.parent, role_ids))
+
+# ---------- Edit flow (roles and message) ----------
+class EditRolePicker(discord.ui.View):
+    def __init__(self, panel: PanelConfig, guild: discord.Guild, channel: discord.TextChannel):
+        super().__init__(timeout=300)
+        self.panel = panel
+        self.guild = guild
+        self.channel = channel
+        self.add_item(_EditRoleSelect(self))
+
+    @discord.ui.button(label="Edit Message", style=discord.ButtonStyle.primary)
+    async def edit_message(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PanelEditMessageModal(self))
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.secondary)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="✅ Editor closed.", view=None)
+
+class _EditRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, parent: EditRolePicker):
+        super().__init__(
+            placeholder="Update roles in this panel…",
+            min_values=1,
+            max_values=25
+        )
+        self.parent = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        roles = [r for r in self.values if isinstance(r, discord.Role)]
+        self.parent.panel.role_ids = [r.id for r in roles]
+        save_all_panels(PANELS)
+
+        # Update the existing message's view
+        channel = self.parent.guild.get_channel(self.parent.panel.channel_id) or await self.parent.guild.fetch_channel(self.parent.panel.channel_id)
+        try:
+            msg = await channel.fetch_message(self.parent.panel.message_id)
+            await msg.edit(view=RolePanelView(self.parent.panel, self.parent.guild))
+        except Exception:
+            pass
+
+        await interaction.response.send_message(content="✅ Roles updated for panel.", ephemeral=True)
+
+class PanelEditMessageModal(discord.ui.Modal):
+    def __init__(self, parent: EditRolePicker):
+        super().__init__(title="Edit Panel Message")
+        self.parent = parent
+        self.body_input = discord.ui.TextInput(
+            label="Panel message",
+            style=discord.TextStyle.paragraph,
+            default=parent.panel.body or "",
+            max_length=4000,
+            required=False
+        )
+        self.add_item(self.body_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        new_body = (self.body_input.value or "").strip()
+        self.parent.panel.body = new_body
+        save_all_panels(PANELS)
+
+        # Fetch and edit the original message's embed
+        channel = self.parent.guild.get_channel(self.parent.panel.channel_id) or await self.parent.guild.fetch_channel(self.parent.panel.channel_id)
+        try:
+            msg = await channel.fetch_message(self.parent.panel.message_id)
+            # Preserve title; update description
+            new_embed = discord.Embed(
+                title=self.parent.panel.title,
+                description=new_body,
                 color=discord.Color.blurple()
             )
-        )
-        panel = PanelConfig(
-            guild_id=interaction.guild_id,
-            channel_id=self.parent.channel.id,
-            message_id=msg.id,
-            title=self.parent.title,
-            role_ids=role_ids,
-            custom_id=custom_id,
-        )
-        PANELS[self.parent.panel_id] = panel
-        save_all_panels(PANELS)
-        await msg.edit(view=RolePanelView(panel, interaction.guild))
-        await interaction.response.edit_message(content=f"✅ Panel created in {self.parent.channel.mention}.", view=None)
+            await msg.edit(embed=new_embed)
+        except Exception:
+            pass
+
+        await interaction.response.send_message(content="✅ Panel message updated.", ephemeral=True)
 
 @tree.command(name="rr_setup", description="Create a reaction-roles dropdown panel (admin only).")
 @app_commands.default_permissions(manage_guild=True)
@@ -225,21 +336,9 @@ async def rr_edit(interaction: discord.Interaction, message_id: str):
     if not target:
         return await interaction.response.send_message("Panel not found for this guild.", ephemeral=True)
 
-    class EditPicker(AdminRolePicker):
-        async def role_select(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
-            roles = [r for r in select.values if isinstance(r, discord.Role)]
-            target.role_ids = [r.id for r in roles]
-            save_all_panels(PANELS)
-            channel = interaction.guild.get_channel(target.channel_id) or await interaction.guild.fetch_channel(target.channel_id)
-            try:
-                msg = await channel.fetch_message(target.message_id)
-                await msg.edit(view=RolePanelView(target, interaction.guild))
-            except Exception:
-                pass
-            await interaction.response.edit_message(content="✅ Panel updated.", view=None)
-
-    view = EditPicker(f"{interaction.guild_id}-edit", interaction.guild.get_channel(target.channel_id), target.title)
-    await interaction.response.send_message("Select the new set of roles for this panel:", view=view, ephemeral=True)
+    ch = interaction.guild.get_channel(target.channel_id) or await interaction.guild.fetch_channel(target.channel_id)
+    view = EditRolePicker(target, interaction.guild, ch)
+    await interaction.response.send_message("Use the controls below to edit this panel (roles or message):", view=view, ephemeral=True)
 
 @tree.command(name="rr_delete", description="Delete a reaction-roles panel (admin only).")
 @app_commands.default_permissions(manage_guild=True)

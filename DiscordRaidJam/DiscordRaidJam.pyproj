@@ -11,8 +11,7 @@
     <OutputPath>.</OutputPath>
     <Name>DiscordRaidJam</Name>
     <RootNamespace>DiscordRaidJam</RootNamespace>
-    <InterpreterId>
-    </InterpreterId>
+    <InterpreterId>MSBuild|DiscordRaidJam_env|$(MSBuildProjectFullPath)</InterpreterId>
     <SuppressPackageInstallationPrompt>True</SuppressPackageInstallationPrompt>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
@@ -28,10 +27,22 @@
     <Compile Include="utils.py" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="config_test.json" />
     <Content Include="config.json" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
     <Content Include="TODO.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <Interpreter Include="DiscordRaidJam_env\">
+      <Id>DiscordRaidJam_env</Id>
+      <Version>3.13</Version>
+      <Description>DiscordRaidJam_env (Python 3.13 (64-bit))</Description>
+      <InterpreterPath>Scripts\python.exe</InterpreterPath>
+      <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
+      <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
+      <Architecture>X64</Architecture>
+    </Interpreter>
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
