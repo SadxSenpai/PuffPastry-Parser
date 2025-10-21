@@ -13,7 +13,7 @@ from typing import List, Dict, Optional
 # === Load config ===
 # config.json       = Live
 # config_test.json  = Testing environment
-with open("config_test.json") as f:
+with open("config.json") as f:
     config = json.load(f)
 
 DISCORD_TOKEN = config["discord_token"]
