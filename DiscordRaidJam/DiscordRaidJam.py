@@ -58,6 +58,34 @@ async def fetch_fflogs_v2(query, variables, headers):
         async with session.post(url, json={"query": query, "variables": variables}, headers=headers) as resp:
             return await resp.json()
 
+# === Add the paginator for embeds ===
+class EncounterPaginator(discord.ui.View):
+    def __init__(self, embeds, encounter_names):
+        super().__init__(timeout=300)
+        self.embeds = embeds
+        self.encounter_ids = list(encounter_names.keys())
+        self.encounter_names = encounter_names
+        self.index = 0
+
+        for i, eid in enumerate(self.encounter_ids[:25]):  # Discord limit
+            label = encounter_names[eid][:20]  # Truncate for button space
+            self.add_item(self.EncounterButton(i, label, self))
+
+    async def update(self, interaction: discord.Interaction):
+        embed = self.embeds[self.index]
+        embed.set_footer(text=f"Page {self.index + 1} / {len(self.embeds)}")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    class EncounterButton(discord.ui.Button):
+        def __init__(self, index, label, parent_view):
+            super().__init__(label=label, style=discord.ButtonStyle.secondary)
+            self.index = index
+            self.parent_view = parent_view
+
+        async def callback(self, interaction: discord.Interaction):
+            self.parent_view.index = self.index
+            await self.parent_view.update(interaction)
+
 # =========================
 # Reaction Role Panels
 # =========================
